@@ -1,7 +1,7 @@
 ---
 name: qa
 preamble-tier: 4
-version: 2.1.0
+version: 2.2.0
 description: |
   Systematically QA test a web application and fix bugs found. Runs QA testing,
   then iteratively fixes bugs in source code, committing each fix atomically and
@@ -40,7 +40,7 @@ triggers:
 
 You are a QA engineer AND a bug-fix engineer. Test web applications like a real user — click everything, fill every form, check every state. When you find bugs, fix them in source code with atomic commits, then re-verify. Produce a structured report with before/after evidence.
 
-**Maker/checker separation.** When you fix a bug you are the *maker*. You never grade your own fix. Each fix's pass/fail is decided by a context-isolated verifier (Phase 8d.5) that sees only the bug's repro steps and drives the app itself — never your diff, your commit, or your reasoning. You may not override its verdict with your own judgment.
+**Maker/checker separation.** When you fix a bug you are the *maker*. You never grade your own fix. Each fix's pass/fail is decided by a context-isolated verifier (Phase 8d.5) that sees only the bug's repro steps and drives the app itself — never your diff, your commit, or your reasoning. You may not override its verdict with your own judgment. When you write a regression test in Phase 8e.5, a separate deterministic discrimination check (Path A) independently proves the test is non-tautological — you do not self-approve your own regression test's validity.
 
 ## Setup
 
@@ -139,6 +139,7 @@ Record baseline health score at end of Phase 6.
 │   ├── issue-001-before.png               # Before fix (if fixed)
 │   ├── issue-001-after.png                # After fix (if fixed)
 │   ├── issue-001-verdict.json             # Independent verify verdict (Phase 8d.5)
+│   ├── issue-001-testcheck.json           # Path A discrimination result (Phase 8e.5-B)
 │   └── ...
 └── baseline.json                          # For regression mode
 ```
@@ -203,6 +204,24 @@ git commit -m "fix(qa): ISSUE-NNN — short description"
 - One commit per fix. Never bundle multiple fixes.
 - Message format: `fix(qa): ISSUE-NNN — short description`
 
+**SHA capture — record now, before any test file is written:**
+
+Immediately after this commit, run:
+
+```bash
+git rev-parse HEAD
+```
+
+Record **FIX_SHA** = the 40-char SHA printed above. Then:
+
+```bash
+git rev-parse HEAD^
+```
+
+Record **PARENT_SHA** = the SHA printed above (the commit before the fix).
+
+Hold FIX_SHA and PARENT_SHA as **immutable prose state** for the rest of this issue's processing. Do NOT recompute from HEAD after this point — the test commit in Phase 8e.5-C will advance HEAD past FIX_SHA.
+
 ### 8d. Re-test
 
 - Navigate back to the affected page
@@ -254,7 +273,7 @@ Read `issue-NNN-verdict.json` from 8d.5 and apply this **deterministic grounding
 
 Classify:
 
-- **verified**: grounded `pass` AND no new console errors.
+- **verified (Path B)**: grounded `pass` AND no new console errors. *(Phase 8e.5-C may upgrade this label to `verified (deterministic)` if the regression test passes Path A discrimination.)*
 - **best-effort**: verdict `inconclusive` (ungrounded pass) OR `unavailable` (verifier did not run), AND no regression. *best-effort means "applied but NOT independently verified" — it is NOT a pass and MUST NOT be counted as verified.*
 - **reverted**: verdict `fail`, OR new console errors. Run the revert-and-retry protocol below. You MUST NOT override a `fail` verdict with your own assessment.
 
@@ -267,17 +286,17 @@ Classify:
 
 **Interaction with Phase 8f self-regulation:** reverts produced by this verify-retry loop count as **one** WTF-likelihood event per issue (not one per attempt). Only a *regression* revert (a fix that broke behavior, caught by console errors or re-test) uses the original signal. A bounded 2-attempt verify loop must not trip the hard-STOP by itself.
 
-### 8e.5. Regression Test
+### 8e.5. Regression Test + Path A Discrimination Check
 
-Skip if: classification is not "verified", OR the fix is purely visual/CSS with no JS behavior, OR no test framework was detected AND user declined bootstrap.
+Skip if: classification is not "verified (Path B)", OR the fix is purely visual/CSS with no JS behavior, OR no test framework was detected AND user declined bootstrap.
 
-**1. Study the project's existing test patterns:**
+**Step 1. Study the project's existing test patterns:**
 
 Read 2-3 test files closest to the fix (same directory, same code type). Match exactly:
 - File naming, imports, assertion style, describe/it nesting, setup/teardown patterns
 The regression test must look like it was written by the same developer.
 
-**2. Trace the bug's codepath, then write a regression test:**
+**Step 2. Trace the bug's codepath, then write the regression test (DO NOT commit yet):**
 
 Before writing the test, trace the data flow through the code you just fixed:
 - What input/state triggered the bug? (the exact precondition)
@@ -307,18 +326,161 @@ Generate unit tests. Mock all external dependencies (DB, API, Redis, file system
 
 Use auto-incrementing names to avoid collisions: check existing `{name}.regression-*.test.{ext}` files, take max number + 1.
 
-**3. Run only the new test file:**
+**Step 3. Confirm the test passes on fixed code (DO NOT commit yet):**
 
 ```bash
 {detected test command} {new-test-file}
 ```
 
-**4. Evaluate:**
-- Passes → commit: `git commit -m "test(qa): regression test for ISSUE-NNN — {desc}"`
-- Fails → fix test once. Still failing → delete test, defer.
-- Taking >2 min exploration → skip and defer.
+- Passes → continue to 8e.5-A.
+- Fails → fix the test once. Still failing → delete the test file, mark issue `best-effort (test authoring failed)`, skip to Phase 8f.
+- Taking >2 min exploration → delete the test file, skip to Phase 8f.
 
-**5. WTF-likelihood exclusion:** Test commits don't count toward the heuristic.
+---
+
+### 8e.5-A. Path A Eligibility Gate
+
+Check ALL four criteria. Any failure → mark eligibility **ineligible** and skip to 8e.5-C (the test is still committed there if it passed Step 3; the issue retains `verified (Path B)`).
+
+**A1 — Mocked-unit only:** The test must mock all external dependencies using `vi.mock(...)` or `jest.mock(...)`. Must not use a real `DATABASE_URL`, `REDIS_URL`, or real network endpoint. Must not use `child_process`, `exec`, `spawn`, or real `fetch` to non-localhost URLs outside a mock.
+
+**A2 — Runner allowlist:** The test runner must be Vitest or Jest (identified from the project's test command). Any other runner (pytest, mocha, tap, jasmine) → ineligible.
+
+**A3 — Static no-sink pre-scan:** Read the test file. If it contains any of the following outside a mock block → ineligible:
+- `fs.rmSync`, `fs.unlinkSync`, `fs.writeFileSync`
+- `child_process`, `execSync`, `spawnSync`
+- `fetch(` with a non-localhost/non-mock URL
+- `process.exit(`
+
+**A4 — Workspace symlink check:**
+
+```bash
+find node_modules -maxdepth 2 -type l 2>/dev/null | head -10
+```
+
+Read a sample of the symlink targets. If any `node_modules/@org/pkg` symlink points to `../../packages/...` (workspace-linked source), mark **ineligible** — symlinking `node_modules` into a parent worktree would drag fix-era workspace package source into the parent run, silently defeating discrimination. (This is a monorepo workspace pattern.)
+
+If all four checks pass → **eligible**, proceed to 8e.5-B.
+
+---
+
+### 8e.5-B. Blind Discrimination Subagent (Path A)
+
+Dispatch a subagent with ONLY these inputs (no diff, no fix description, no source code, no commit message — structural blindness prevents maker/checker fusion):
+
+> You are a deterministic discrimination validator. Your single job: prove whether a regression test can distinguish pre-fix (buggy) code from post-fix (fixed) code, by running it against both commit states. You are not permitted to read the fix's source diff or the bug report.
+>
+> **Your inputs (all you know):**
+> - Test file path: `{path/to/new-test-file}`
+> - FIX_SHA: `{FIX_SHA}` — the fixed commit (working tree is already at this state)
+> - PARENT_SHA: `{PARENT_SHA}` — the commit before the fix
+> - Test command: `{detected test command} {new-test-file} --reporter=json`
+> - PKG_CWD: `{absolute path to the package.json directory for this test's package}`
+>
+> **Phase A — Fix-side (3 runs on current working tree at FIX_SHA):**
+> From PKG_CWD, run the test command 3 times. Each run must show all tests PASS. If any run fails or produces an error → write `{"verdict": "inconclusive", "reason": "fix-side failure or flakiness"}` to `issue-NNN-testcheck.json` and stop.
+>
+> **Phase B — Parent-side (3 runs in isolated worktree at PARENT_SHA):**
+>
+> 1. Create a detached worktree at PARENT_SHA using the pattern from `lib/worktree.ts` in this repo: `git worktree add --detach .gstack-worktrees/qa-patha-NNN-<timestamp> PARENT_SHA`. Use a unique runId to avoid collisions with sibling sessions.
+>
+> 2. Copy ONLY the test file into the worktree (preserving its relative path): `cp <test-file-path> .gstack-worktrees/<runId>/<relative-path>`. Do NOT copy source files — the worktree already has PARENT_SHA source. Do NOT copy `node_modules`.
+>
+> 3. Symlink `node_modules` for dependency resolution: from the worktree root, create a symlink: `ln -s <absolute-path-to-repo-root>/node_modules .gstack-worktrees/<runId>/node_modules`. This brings in the test framework and npm deps without bringing workspace-linked source (workspace symlinks were already screened out by the eligibility gate).
+>
+> 4. From `{worktree-root}/{PKG_CWD relative to repo root}`, run the test command 3 times, capturing `--reporter=json` output for each run.
+>
+> 5. Cleanup: `git worktree remove --force .gstack-worktrees/<runId> && git worktree prune`.
+>
+> **Per-run classification rules (apply to each run's `--reporter=json` output):**
+>
+> Evaluate in this strict order — earlier conditions supersede later ones:
+>
+> *Step 1 — Suite-level load check (evaluate first, before per-case logic):*
+> Classify the whole run as **LOAD_FAIL** if ANY of the following holds:
+> - `numTotalTests === 0` (suite failed to collect; primary signal for both runners)
+> - Vitest: file-level `status === "failed"` with empty `assertionResults` array AND a top-level error `message` present
+> - Jest: `testResults[0].testExecError` is set (note: absent on many Jest versions even for load failures — `numTotalTests === 0` is the more reliable signal)
+> If any of the above → whole run = **LOAD_FAIL**. Stop. Do not evaluate per-case logic.
+>
+> *Step 2 — Per-case classification (evaluate ALL cases before rolling up):*
+> For each entry in `assertionResults`, classify it independently:
+> - Entry is **assertion-shaped** if `failureMessages[0]` matches ANY of: `AssertionError`, `expected .* to`, `Received:`, `Expected:`, `to be`, `to equal`, `to match`, `to throw` with value context
+> - Entry is **load-shaped** if `failureMessages[0]` matches ANY of: `TypeError:`, `is not a function`, `is not defined`, `ReferenceError:`, `Cannot find module`, `SyntaxError:`, `Failed to load`, `Cannot read`, `STACK_TRACE_ERROR`
+> - Ambiguous (neither pattern clearly matches) → classify entry as **load-shaped** (fail-closed default)
+>
+> *Step 3 — Roll-up rule (LOAD-SHAPE DOMINATES — this is the critical invariant):*
+> - If ANY case is load-shaped → whole run = **LOAD_FAIL**. Load-shape dominance is unconditional: the presence of an assertion-shaped case in the SAME file does NOT rescue the run to ASSERTION_FAIL.
+> - If ALL failing cases are assertion-shaped AND at least one is present → whole run = **ASSERTION_FAIL**
+> - If all `assertionResults` entries have `status === "passed"` → whole run = **PASS**
+> - Runner exits non-zero with no parseable JSON, or run exceeds 30s → **TIMEOUT**
+>
+> **Discrimination verdict (applied after all 6 runs are classified):**
+> - ALL 3 parent runs = ASSERTION_FAIL AND ALL 3 fix runs = PASS → verdict: `verified (deterministic)`
+> - ANY parent run = PASS (test ran cleanly but didn't trigger on the bug) → verdict: `tautological`
+> - ANY parent run = LOAD_FAIL or TIMEOUT → verdict: `inconclusive`
+> - ANY fix run ≠ PASS → verdict: `inconclusive` (fix-side instability)
+> - Mixed results across parent runs → verdict: `inconclusive`
+>
+> **Output ONLY this JSON** (write to `{REPORT_DIR}/screenshots/issue-NNN-testcheck.json`):
+> ```json
+> {
+>   "verdict": "verified (deterministic)" | "tautological" | "inconclusive",
+>   "fix_sha": "{FIX_SHA}",
+>   "parent_sha": "{PARENT_SHA}",
+>   "fix_runs": [
+>     {"attempt": 1, "classification": "PASS", "summary": "all N tests passed"},
+>     ...
+>   ],
+>   "parent_runs": [
+>     {
+>       "attempt": 1,
+>       "classification": "ASSERTION_FAIL" | "LOAD_FAIL" | "PASS" | "TIMEOUT",
+>       "summary": "brief description of what happened",
+>       "failure_message_excerpt": "first 150 chars of failureMessages[0] for each failing case (include per-case classification label)",
+>       "load_shape_dominated": true | false
+>     },
+>     ...
+>   ],
+>   "assertion_diff": "one-sentence description of what the test asserted that differed between parent and fix (null if verdict is not verified)"
+> }
+> ```
+>
+> **Fail-closed invariants:**
+> - Never classify a LOAD_FAIL run as ASSERTION_FAIL. Load-shape from ANY case dominates.
+> - Ambiguous `failureMessages` → load-shaped. Do not guess "this looks like an assertion error" without a clear matcher pattern.
+> - Do NOT read the fix source diff, the commit message, or the bug report.
+> - If worktree setup fails for any reason → write `{"verdict": "inconclusive", "reason": "worktree setup failed: <error>"}` and exit.
+
+If dispatch fails or returns no parseable JSON → write `{"verdict": "inconclusive", "reason": "subagent unavailable"}`.
+
+---
+
+### 8e.5-C. Label Consolidation + Single Test Commit
+
+Read `issue-NNN-testcheck.json` (from 8e.5-B) or the eligibility decision (from 8e.5-A) and apply the following. The commit happens HERE — not in Step 3 or anywhere before.
+
+| Condition | Final Label | Test File Action |
+|---|---|---|
+| Verdict = `verified (deterministic)`, no re-author | **verified (deterministic)** | Commit: `git commit -m "test(qa): regression test for ISSUE-NNN — {desc}"` |
+| Verdict = `verified (deterministic)`, after 1 re-author | **verified (deterministic, re-authored)** | Commit the re-authored test |
+| Verdict = `tautological`, re-author attempt = 0 | *trigger re-author (once)* | Delete the current test file. Re-author (see below). Cap: 1 re-author per issue. |
+| Verdict = `tautological`, re-author attempt = 1 | **verified (Path B)** | Delete the test file. Issue retains Phase 8e grounded pass. Do NOT commit any test. |
+| Verdict = `inconclusive` | **verified (Path B)** | Commit the test as-is (best-available artifact; Path A could not execute). |
+| 8e.5-A = ineligible | **verified (Path B)** | Commit the test as-is (it passes on fixed code). |
+
+**Re-author procedure (tautological, first occurrence):**
+1. Run `git diff {PARENT_SHA} {FIX_SHA} -- <fixed-source-files>` to identify which lines changed in the fix. Read the output.
+2. Delete the current test file.
+3. Re-author from scratch: the new test MUST assert directly on behavior that exercises the changed lines from the diff (not a peripheral side effect like a log format, timestamp, or renamed variable). Avoid asserting on anything that would have changed regardless of the bug.
+4. Run the new test on fixed code (Step 3). If it fails → delete, issue stays `verified (Path B)`, stop.
+5. Re-check 8e.5-A eligibility. If now ineligible → commit as-is, issue stays `verified (Path B)`.
+6. Re-dispatch 8e.5-B with `"reauthor_attempt": 1`. Add `"reauthor_hunk_target": "description of which changed behavior the re-authored assertion directly exercises"` to `testcheck.json`.
+
+**Ceiling acknowledgment** (record in the Phase 10 report and `testcheck.json`):
+> `verified (deterministic)` proves the regression test distinguishes pre-fix from post-fix code. It does NOT certify that the fix is semantically correct, complete, or the only valid solution. The test's assertion may be narrow.
+
+**WTF-likelihood exclusion:** Test commits (including re-authored commits) do not count toward the heuristic.
 
 ### 8f. Self-Regulation (STOP AND EVALUATE)
 
@@ -363,19 +525,28 @@ Write the report to both local and project-scoped locations:
 Write to `~/.gstack/projects/{slug}/{user}-{branch}-test-outcome-{datetime}.md`
 
 **Per-issue additions** (beyond standard report template):
-- Fix Status: verified / best-effort / reverted / deferred
+- Fix Status: one of the labels below
 - Commit SHA (if fixed)
 - Files Changed (if fixed)
 - Before/After screenshots (if fixed)
+- Path A result: link to `issue-NNN-testcheck.json` (if regression test was written)
+
+**Label taxonomy:**
+- **verified (deterministic)**: regression test ASSERTION_FAIL on parent commit, PASS on fix commit. Ceiling: proves test discrimination, not semantic correctness.
+- **verified (deterministic, re-authored)**: same, but initial test was tautological and was re-authored once (see `reauthor_hunk_target` in `testcheck.json`).
+- **verified (Path B)**: grounded behavioral pass from Phase 8d.5 verifier. Path A was ineligible, inconclusive, or skipped; or tautological re-author was exhausted.
+- **best-effort**: fix applied but no independent verification succeeded (inconclusive verdict or verifier unavailable).
+- **reverted**: failed independent verify, rolled back.
+- `best-effort` MUST NOT be counted as verified in any summary.
 
 **Summary section:**
 - Total issues found
-- Fixes applied (verified: X, best-effort: Y, reverted: Z) — **verified** = independently verified (grounded pass from Phase 8d.5); **best-effort** = applied but NOT independently verified (inconclusive verdict or verifier unavailable); **reverted** = failed verify, rolled back. best-effort MUST NOT be counted as verified.
+- Fixes applied: **verified (deterministic)**: D, **verified (deterministic, re-authored)**: R, **verified (Path B)**: P, **best-effort**: B, **reverted**: V
 - Deferred issues
 - Health score delta: baseline → final
 
-**PR Summary:** Include a one-line summary suitable for PR descriptions (count only **verified** fixes as "fixed"; report best-effort separately):
-> "QA found N issues, fixed M (verified), K best-effort, health score X → Y."
+**PR Summary:** Count `verified (deterministic)` + `verified (deterministic, re-authored)` + `verified (Path B)` as "verified". Never count `best-effort` as "fixed":
+> "QA found N issues, fixed M verified (D deterministic, P Path B), K best-effort, health score X → Y."
 
 ---
 
@@ -400,4 +571,5 @@ If the repo has a `TODOS.md`:
 14. **Revert on regression.** If a fix makes things worse, `git revert HEAD` immediately.
 15. **Self-regulate.** Follow the WTF-likelihood heuristic. When in doubt, stop and ask.
 16. **Maker/checker separation.** You never grade your own bug fix; pass/fail comes from the context-isolated Phase 8d.5 verifier that never sees your diff. You MUST NOT override a `fail` verdict with self-assessment, and MUST NOT count `best-effort` (unverified) as `verified`.
-17. **The functional verifier is a semi-trusted judgment sensor.** It can hallucinate a match or miss a mismatch, and its blindness is enforced only by instruction (it shares the working tree), so it is NOT a deterministic sensor. Its `pass` is trusted only after the deterministic grounding gate in 8e (concrete expected-behavior contract + behavioral observation + confidence). An ungrounded "seems fine" is inconclusive, not pass. A verifier that returns no verdict degrades the issue to `best-effort`, never to `verified`.
+17. **The functional verifier is a semi-trusted judgment sensor.** It can hallucinate a match or miss a mismatch, and its blindness is enforced only by instruction (it shares the working tree), so it is NOT a deterministic sensor. Its `pass` is trusted only after the deterministic grounding gate in 8e (concrete expected-behavior contract + behavioral observation + confidence). An ungrounded "seems fine" is inconclusive, not pass. A verifier that returns no verdict degrades the issue to `best-effort`, never to `verified (Path B)`.
+18. **Path A is a discrimination sensor, not a correctness proof.** `verified (deterministic)` = the regression test assertion-failed on parent and passed on fix. It does NOT certify that the fix is semantically correct, complete, or the sole valid solution. Fail-closed: LOAD_FAIL on parent → `inconclusive`; PASS on parent → `tautological`; fix-side failure → `inconclusive`. Load-shape from ANY case in a multi-case test file dominates the entire run (never upgrades to ASSERTION_FAIL because another case happened to be assertion-shaped). If Path A reaches an inconclusive state, the issue retains its `verified (Path B)` label — never degrades below it. Path A runs only after Path B has not returned `fail` (phase order enforces this — a `reverted` issue never reaches 8e.5).
