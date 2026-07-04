@@ -1545,7 +1545,7 @@ $B snapshot -D
 
 ### 8d.5. Independent Functional Verify (maker/checker gate)
 
-You just committed a fix (8c) and re-tested it yourself (8d). **Do NOT classify it yourself.** Dispatch a fresh, context-isolated verifier to judge whether the bug is actually gone — the same subagent-dispatch idiom as Design Outside Voices, using a fixed instruction string that structurally cannot contain your diff. The verifier drives the app itself from the bug's repro steps; it does not read your fix. **This step adds no new `$B` commands to this skill** — the subagent issues its own browser commands.
+You just committed a fix (8c) and re-tested it yourself (8d). **Do NOT classify it yourself.** Dispatch a fresh, context-isolated verifier to judge whether the bug is actually gone — via gstack's fresh-context Agent-tool subagent dispatch, using a fixed instruction string that structurally cannot contain your diff. The verifier drives the app itself from the bug's repro steps; it does not read your fix. **This step adds no new `$B` commands to this skill** — the subagent issues its own browser commands.
 
 Dispatch a subagent with this exact prompt (fill only the bracketed repro fields — never add your diff, commit message, source, or rationale):
 
