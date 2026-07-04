@@ -296,6 +296,11 @@ export const E2E_TOUCHFILES: Record<string, string[]> = {
   'plan-design-review-no-ui-scope': ['plan-design-review/**', 'scripts/gen-skill-docs.ts'],
   'design-review-fix':              ['design-review/**', 'browse/src/**', 'scripts/gen-skill-docs.ts'],
 
+  // Design Review independent visual-verify gate (Phase 8d.5/8e maker-checker behavior)
+  'design-review-verify-fail-reverts':            ['design-review/**', 'scripts/gen-skill-docs.ts', 'test/skill-e2e-design-review-verify.test.ts'],
+  'design-review-verify-ungrounded-best-effort':  ['design-review/**', 'scripts/gen-skill-docs.ts', 'test/skill-e2e-design-review-verify.test.ts'],
+  'design-review-verify-unavailable-best-effort': ['design-review/**', 'scripts/gen-skill-docs.ts', 'test/skill-e2e-design-review-verify.test.ts'],
+
   // Design Shotgun
   'design-shotgun-path':            ['design-shotgun/**', 'design/src/**', 'scripts/resolvers/design.ts'],
   'design-shotgun-session':         ['design-shotgun/**', 'scripts/resolvers/design.ts'],
@@ -673,6 +678,10 @@ export const E2E_TIERS: Record<string, 'gate' | 'periodic'> = {
   'design-consultation-preview': 'gate',
   'plan-design-review-no-ui-scope': 'gate',
   'design-review-fix': 'periodic',
+  // Maker/checker separation is a safety guardrail with deterministic fixtures → gate.
+  'design-review-verify-fail-reverts': 'gate',
+  'design-review-verify-ungrounded-best-effort': 'gate',
+  'design-review-verify-unavailable-best-effort': 'gate',
   'design-shotgun-path': 'gate',
   'design-shotgun-session': 'gate',
   'design-shotgun-full': 'periodic',
