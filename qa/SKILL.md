@@ -1,7 +1,7 @@
 ---
 name: qa
 preamble-tier: 4
-version: 2.0.0
+version: 2.1.0
 description: Systematically QA test a web application and fix bugs found. (gstack)
 allowed-tools:
   - Bash
@@ -849,6 +849,8 @@ branch name wherever the instructions say "the base branch" or `<default>`.
 
 You are a QA engineer AND a bug-fix engineer. Test web applications like a real user — click everything, fill every form, check every state. When you find bugs, fix them in source code with atomic commits, then re-verify. Produce a structured report with before/after evidence.
 
+**Maker/checker separation.** When you fix a bug you are the *maker*. You never grade your own fix. Each fix's pass/fail is decided by a context-isolated verifier (Phase 8d.5) that sees only the bug's repro steps and drives the app itself — never your diff, your commit, or your reasoning. You may not override its verdict with your own judgment.
+
 ## Setup
 
 **Parse the user's request for these parameters:**
@@ -1443,6 +1445,7 @@ Record baseline health score at end of Phase 6.
 │   ├── issue-001-result.png
 │   ├── issue-001-before.png               # Before fix (if fixed)
 │   ├── issue-001-after.png                # After fix (if fixed)
+│   ├── issue-001-verdict.json             # Independent verify verdict (Phase 8d.5)
 │   └── ...
 └── baseline.json                          # For regression mode
 ```
@@ -1521,11 +1524,55 @@ $B console --errors
 $B snapshot -D
 ```
 
-### 8e. Classify
+### 8d.5. Independent Functional Verify (maker/checker gate)
 
-- **verified**: re-test confirms the fix works, no new errors introduced
-- **best-effort**: fix applied but couldn't fully verify (e.g., needs auth state, external service)
-- **reverted**: regression detected → `git revert HEAD` → mark issue as "deferred"
+You just committed a fix (8c) and re-tested it yourself (8d). **Do NOT classify it yourself.** Dispatch a fresh, context-isolated verifier to judge whether the bug is actually gone — the same subagent-dispatch idiom as Design Outside Voices, using a fixed instruction string that structurally cannot contain your diff. The verifier drives the app itself from the bug's repro steps; it does not read your fix. **This step adds no new `$B` commands to this skill** — the subagent issues its own browser commands.
+
+Dispatch a subagent with this exact prompt (fill only the bracketed repro fields — never add your diff, commit message, source, or rationale):
+
+> You are an independent QA verifier. You judge ONE thing: does the reported bug still reproduce?
+>
+> **Negative capabilities (hard limits):** Do NOT read any source file. Do NOT run git (`git diff`, `git show`, `git log`, `git status`). Do NOT read anything under `.gstack/qa-reports/`. Do NOT read the regression test file. Do NOT navigate to a source-serving or source-map route. Your ONLY inputs are the repro steps below and a live browser (`$B`). If you feel you need the source code to decide, that itself is a `fail` — reproduce from user-visible behavior only. (This blindness is an instructional barrier, not a sandbox — honor it.)
+>
+> **Inputs:**
+> - Bug precondition (starting state): "<precondition>"
+> - Action that exposed the bug: "<repro steps / action>"
+> - Correct expected behavior (what SHOULD happen now): "<expected behavior — outcome only, NOT how it was fixed>"
+> - Target URL: "<affected-url>"
+>
+> **Task:** Using `$B` only, set up the precondition, perform the action, and observe what actually happens (console, DOM, network). Decide whether the bug is GONE (the app now shows the expected correct behavior) or still PRESENT.
+>
+> **Output ONLY this JSON:** `{"verdict": "pass" | "fail", "rule_cited": "<the specific expected-behavior contract you judged against>", "observation": "<a concrete behavioral observation — what you saw in console/DOM/network>", "confidence": <0.0-1.0>}`
+>
+> `pass` = bug gone (expected behavior observed). `fail` = bug still reproduces, OR you could not set up the repro at all (insufficient evidence). If you cannot cite BOTH a concrete expected-behavior contract AND a concrete observation, return `"fail"`.
+
+Write the returned JSON to `$REPORT_DIR/screenshots/issue-NNN-verdict.json`.
+
+**If the dispatch fails or returns no parseable verdict:** record `{"verdict": "unavailable"}` — do NOT self-grade, do NOT proceed as `verified`. The issue classifies as **best-effort** in 8e.
+
+This verifier is a **semi-trusted judgment sensor** — it can hallucinate a match or miss a mismatch, and its blindness is enforced only by instruction (it shares the working tree). It is NOT a deterministic sensor. Its `pass` is trusted only after the deterministic grounding gate in 8e.
+
+### 8e. Classify (consume the independent verdict — do NOT self-judge)
+
+Read `issue-NNN-verdict.json` from 8d.5 and apply this **deterministic grounding gate** (the semi-trusted sensor does not certify itself — you certify it, mechanically):
+
+1. **Grounding check.** A `pass` verdict counts only if ALL hold: `rule_cited` names a concrete expected-behavior contract (not a vague "seems fine"); `observation` is a concrete behavioral observation (console/DOM/network state); `confidence` is present. If any is missing → treat the verdict as **inconclusive** (not pass).
+2. **Console check.** `$B console --errors` from 8d shows no new errors.
+
+Classify:
+
+- **verified**: grounded `pass` AND no new console errors.
+- **best-effort**: verdict `inconclusive` (ungrounded pass) OR `unavailable` (verifier did not run), AND no regression. *best-effort means "applied but NOT independently verified" — it is NOT a pass and MUST NOT be counted as verified.*
+- **reverted**: verdict `fail`, OR new console errors. Run the revert-and-retry protocol below. You MUST NOT override a `fail` verdict with your own assessment.
+
+**Revert-and-retry protocol (bounded).** Maintain `attempts[ISSUE-NNN]` (starts at 0, per-issue, persists for the whole fix loop). On a **reverted** outcome:
+
+1. `git revert HEAD` (undo the fix).
+2. Increment `attempts[ISSUE-NNN]`.
+3. If `attempts[ISSUE-NNN] >= 2` → mark the issue **deferred**, record the last verdict, and **move on to the next issue** (do NOT re-enter 8b).
+4. Otherwise → return to **8b (Fix)**, carrying the verifier's `rule_cited` + `observation` as the new fix signal. Every retry MUST flow forward through 8c → 8d → **8d.5** again (no path that re-commits and skips independent verify).
+
+**Interaction with Phase 8f self-regulation:** reverts produced by this verify-retry loop count as **one** WTF-likelihood event per issue (not one per attempt). Only a *regression* revert (a fix that broke behavior, caught by console errors or re-test) uses the original signal. A bounded 2-attempt verify loop must not trip the hard-STOP by itself.
 
 ### 8e.5. Regression Test
 
@@ -1630,12 +1677,12 @@ Write to `~/.gstack/projects/{slug}/{user}-{branch}-test-outcome-{datetime}.md`
 
 **Summary section:**
 - Total issues found
-- Fixes applied (verified: X, best-effort: Y, reverted: Z)
+- Fixes applied (verified: X, best-effort: Y, reverted: Z) — **verified** = independently verified (grounded pass from Phase 8d.5); **best-effort** = applied but NOT independently verified (inconclusive verdict or verifier unavailable); **reverted** = failed verify, rolled back. best-effort MUST NOT be counted as verified.
 - Deferred issues
 - Health score delta: baseline → final
 
-**PR Summary:** Include a one-line summary suitable for PR descriptions:
-> "QA found N issues, fixed M, health score X → Y."
+**PR Summary:** Include a one-line summary suitable for PR descriptions (count only **verified** fixes as "fixed"; report best-effort separately):
+> "QA found N issues, fixed M (verified), K best-effort, health score X → Y."
 
 ---
 
@@ -1682,3 +1729,5 @@ already knows. A good test: would this insight save time in a future session? If
 13. **Only modify tests when generating regression tests in Phase 8e.5.** Never modify CI configuration. Never modify existing tests — only create new test files.
 14. **Revert on regression.** If a fix makes things worse, `git revert HEAD` immediately.
 15. **Self-regulate.** Follow the WTF-likelihood heuristic. When in doubt, stop and ask.
+16. **Maker/checker separation.** You never grade your own bug fix; pass/fail comes from the context-isolated Phase 8d.5 verifier that never sees your diff. You MUST NOT override a `fail` verdict with self-assessment, and MUST NOT count `best-effort` (unverified) as `verified`.
+17. **The functional verifier is a semi-trusted judgment sensor.** It can hallucinate a match or miss a mismatch, and its blindness is enforced only by instruction (it shares the working tree), so it is NOT a deterministic sensor. Its `pass` is trusted only after the deterministic grounding gate in 8e (concrete expected-behavior contract + behavioral observation + confidence). An ungrounded "seems fine" is inconclusive, not pass. A verifier that returns no verdict degrades the issue to `best-effort`, never to `verified`.
