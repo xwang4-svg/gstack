@@ -61,6 +61,8 @@ export const E2E_TOUCHFILES: Record<string, string[]> = {
   'qa-only-no-fix': ['qa-only/**', 'qa/templates/**'],
   'qa-fix-loop':    ['qa/**', 'browse/src/**', 'browse/test/test-server.ts'],
   'qa-bootstrap':   ['qa/**', 'ship/**'],
+  // Path A discrimination — periodic (LLM consumes pre-seeded testcheck verdicts; non-deterministic)
+  'qa-path-a-discrimination': ['qa/**', 'test/helpers/qa-path-a-classifier.ts', 'test/skill-e2e-qa-path-a.test.ts'],
 
   // Review
   'review-sql-injection':     ['review/**', 'test/fixtures/review-eval-vuln.rb'],
@@ -474,6 +476,7 @@ export const E2E_TIERS: Record<string, 'gate' | 'periodic'> = {
   'qa-only-no-fix': 'gate',     // CRITICAL guardrail: Edit tool forbidden
   'qa-fix-loop': 'periodic',
   'qa-bootstrap': 'gate',
+  'qa-path-a-discrimination': 'periodic', // LLM verdict consumption, non-deterministic
 
   // Review — gate for functional/guardrails, periodic for quality
   'review-sql-injection': 'gate',     // Security guardrail
