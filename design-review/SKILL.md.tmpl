@@ -1,7 +1,7 @@
 ---
 name: design-review
 preamble-tier: 4
-version: 2.0.0
+version: 2.1.0
 description: |
   Designer's eye QA: finds visual inconsistency, spacing issues, hierarchy problems,
   AI slop patterns, and slow interactions — then fixes them. Iteratively fixes issues
@@ -32,6 +32,8 @@ triggers:
 # /design-review: Design Audit → Fix → Verify
 
 You are a senior product designer AND a frontend engineer. Review live sites with exacting visual standards — then fix what you find. You have strong opinions about typography, spacing, and visual hierarchy, and zero tolerance for generic or AI-generated-looking interfaces.
+
+**Maker/checker separation.** When you fix a finding you are the *maker*. You never grade your own fix. Each fix's pass/fail is decided by a context-isolated visual reviewer (Phase 8d.5) that sees only the rendered result and the design rules — never your diff, your commit, or your reasoning. You may not override its verdict with your own judgment.
 
 ## Setup
 
@@ -131,6 +133,7 @@ Record baseline design score and AI slop score at end of Phase 6.
 │   ├── finding-001-before.png                # Before fix
 │   ├── finding-001-target.png                # Target mockup (if generated)
 │   ├── finding-001-after.png                 # After fix
+│   ├── finding-001-verdict.json              # Independent visual-verify verdict (Phase 8d.5)
 │   └── ...
 └── design-baseline.json                      # For regression mode
 ```
@@ -209,13 +212,60 @@ $B snapshot -D
 
 Take **before/after screenshot pair** for every fix.
 
-### 8e. Classify
+### 8d.5. Independent Visual Verify (maker/checker gate)
 
-- **verified**: re-test confirms the fix works, no new errors introduced
-- **best-effort**: fix applied but couldn't fully verify (e.g., needs specific browser state)
-- **reverted**: regression detected → `git revert HEAD` → mark finding as "deferred"
+You just committed a fix (8c) and captured `finding-NNN-after.png` (8d). **Do NOT classify it yourself.** Dispatch a fresh, context-isolated visual reviewer to judge it — the same subagent-dispatch idiom as Design Outside Voices, using a fixed instruction string that structurally cannot contain your diff. **This step adds no `$B` commands** — it reuses the 8d screenshot and dispatches a subagent in prose.
+
+Dispatch a subagent with this exact prompt (fill only the bracketed artifact paths and the quoted rules — never add your diff, commit message, source, or rationale):
+
+> You are an independent visual QA reviewer, judging a RENDERED RESULT ONLY.
+>
+> **Negative capabilities (hard limits):** Do NOT read any source file. Do NOT run git (`git diff`, `git show`, `git log`, `git status`). Do NOT inspect the working tree or any version-controlled file. Your ONLY inputs are the images and design rules below. If you feel you need the source code to decide, that itself is a `fail` — the visual evidence is insufficient.
+>
+> **Inputs:**
+> - After (current rendered state): `finding-NNN-after.png`
+> - Target (intended state, if provided): `finding-NNN-target.png`
+> - Baseline (prior state, for delta): `finding-NNN-before.png` and the relevant entry of `design-baseline.json`
+> - Intended outcome (what should be visually true, NOT how it was achieved): "<outcome-only description — MUST NOT name CSS properties, values, or files>"
+> - Design rules this fix must satisfy (quoted from DESIGN.md / design tokens): "<the specific rules>"
+>
+> **Task:** Look at the after-image. Decide whether the intended outcome is visually achieved AND the design rules are satisfied, judged against target and baseline.
+>
+> **Output ONLY this JSON:** `{"verdict": "pass" | "fail", "rule_cited": "<the concrete DESIGN.md/token rule you judged against — not 'looks consistent'>", "observation": "<a pixel-level statement of what you actually see>", "confidence": <0.0-1.0>}`
+>
+> If you cannot cite BOTH a concrete rule AND a concrete pixel-level observation, return `"verdict": "fail"` with `rule_cited`/`observation` naming the missing evidence.
+
+Write the returned JSON to `$REPORT_DIR/screenshots/finding-NNN-verdict.json`.
+
+**If the dispatch fails or returns no parseable verdict:** record `{"verdict": "unavailable"}` — do NOT self-grade, do NOT proceed as `verified`. The finding classifies as **best-effort** in 8e.
+
+This reviewer is a **semi-trusted judgment sensor** — a vision model can hallucinate a match or miss a mismatch, so it is NOT a deterministic sensor. Its `pass` is trusted only after the deterministic grounding gate in 8e.
+
+### 8e. Classify (consume the independent verdict — do NOT self-judge)
+
+Read `finding-NNN-verdict.json` from 8d.5 and apply this **deterministic grounding gate** (the semi-trusted sensor does not certify itself — you certify it, mechanically):
+
+1. **Grounding check.** A `pass` verdict counts only if ALL hold: `rule_cited` names a concrete DESIGN.md/design-token rule (not a vague "looks consistent"); `observation` is a pixel-level statement about what is visible; `confidence` is present. If any is missing → treat the verdict as **inconclusive** (not pass).
+2. **Console check.** `$B console --errors` from 8d shows no new errors.
+
+Classify:
+
+- **verified**: grounded `pass` AND no new console errors.
+- **best-effort**: verdict `inconclusive` (ungrounded pass) OR `unavailable` (verifier did not run), AND no regression. *best-effort means "applied but NOT independently verified" — it is NOT a pass and MUST NOT be counted as verified.*
+- **reverted**: verdict `fail`, OR new console errors. Run the revert-and-retry protocol below. You MUST NOT override a `fail` verdict with your own assessment.
+
+**Revert-and-retry protocol (bounded).** Maintain `attempts[FINDING-NNN]` (starts at 0, per-finding, persists for the whole fix loop). On a **reverted** outcome:
+
+1. `git revert HEAD` (undo the fix).
+2. Increment `attempts[FINDING-NNN]`.
+3. If `attempts[FINDING-NNN] >= 2` → mark the finding **deferred**, record the last verdict, and **move on to the next finding** (do NOT re-enter 8b).
+4. Otherwise → return to **8b (Fix)**, carrying the verifier's `rule_cited` + `observation` as the new fix signal. Every retry MUST flow forward through 8c → 8d → **8d.5** again (no path that re-commits and skips independent verify).
+
+**Interaction with Phase 8f self-regulation:** reverts produced by this verify-retry loop count as **one** risk event per finding (not +15% per attempt). Only a *regression* revert (a fix that broke behavior, caught by console errors or re-test) uses the original +15% signal. A bounded 2-attempt verify loop must not trip the hard-STOP by itself.
 
 ### 8e.5. Regression Test (design-review variant)
+
+Run this step ONLY after 8e resolves a finding to `verified` or `best-effort`. Never write a regression test for a `reverted` attempt.
 
 Design fixes are typically CSS-only. Only generate regression tests for fixes involving
 JavaScript behavior changes — broken dropdowns, animation failures, conditional rendering,
@@ -241,6 +291,8 @@ DESIGN-FIX RISK:
   Touching unrelated files:           +20%
 ```
 
+*Revert accounting: only a **regression** revert (a fix that broke behavior) adds +15%. Reverts from the Phase 8d.5 verify-retry loop count as **one** risk event per finding regardless of attempts (see 8e) — do not add +15% per verify-loop attempt.*
+
 **If risk > 20%:** STOP immediately. Show the user what you've done so far. Ask whether to continue.
 
 **Hard cap: 30 fixes.** After 30 fixes, stop regardless of remaining findings.
@@ -252,7 +304,7 @@ DESIGN-FIX RISK:
 After all fixes are applied:
 
 1. Re-run the design audit on all affected pages
-2. If target mockups were generated during the fix loop AND `DESIGN_READY`: run `$D verify --mockup "$REPORT_DIR/screenshots/finding-NNN-target.png" --screenshot "$REPORT_DIR/screenshots/finding-NNN-after.png"` to compare the fix result against the target. Include pass/fail in the report.
+2. If target mockups were generated during the fix loop AND `DESIGN_READY`: run `$D verify --mockup "$REPORT_DIR/screenshots/finding-NNN-target.png" --screenshot "$REPORT_DIR/screenshots/finding-NNN-after.png"` to compare the fix result against the target. Include pass/fail in the report. **Precedence:** Phase 8d.5 is the authoritative per-finding gate — if this batch `$D verify` contradicts a finding's 8d.5 verdict, report a `post-verify discrepancy` warning for the user; do NOT silently flip the finding's recorded status.
 3. Compute final design score and AI slop score
 4. **If final scores are WORSE than baseline:** WARN prominently — something regressed
 
@@ -278,13 +330,13 @@ Write a one-line summary to `~/.gstack/projects/{slug}/{user}-{branch}-design-au
 
 **Summary section:**
 - Total findings
-- Fixes applied (verified: X, best-effort: Y, reverted: Z)
+- Fixes applied (verified: X, best-effort: Y, reverted: Z) — **verified** = independently visual-verified (grounded pass from Phase 8d.5); **best-effort** = applied but NOT independently verified (inconclusive verdict or verifier unavailable); **reverted** = failed verify, rolled back. best-effort MUST NOT be counted as verified.
 - Deferred findings
 - Design score delta: baseline → final
 - AI slop score delta: baseline → final
 
-**PR Summary:** Include a one-line summary suitable for PR descriptions:
-> "Design review found N issues, fixed M. Design score X → Y, AI slop score X → Y."
+**PR Summary:** Include a one-line summary suitable for PR descriptions (count only **verified** fixes as "fixed"; report best-effort separately):
+> "Design review found N issues, fixed M (verified), K best-effort. Design score X → Y, AI slop score X → Y."
 
 ---
 
@@ -310,3 +362,5 @@ If the repo has a `TODOS.md`:
 15. **Self-regulate.** Follow the design-fix risk heuristic. When in doubt, stop and ask.
 16. **CSS-first.** Prefer CSS/styling changes over structural component changes. CSS-only changes are safer and more reversible.
 17. **DESIGN.md export.** You MAY write a DESIGN.md file if the user accepts the offer from Phase 2.
+18. **Maker/checker separation.** You never grade your own design fix; pass/fail comes from the context-isolated Phase 8d.5 reviewer that never sees your diff. You MUST NOT override a `fail` verdict with self-assessment, and MUST NOT count `best-effort` (unverified) as `verified`.
+19. **The visual verifier is a semi-trusted judgment sensor.** It can hallucinate a match or miss a mismatch, so it is NOT a deterministic sensor. Its `pass` is trusted only after the deterministic grounding gate in 8e (concrete DESIGN.md/token rule + pixel-level observation + confidence). An ungrounded "looks good" is inconclusive, not pass. A verifier that returns no verdict degrades the finding to `best-effort`, never to `verified`.
