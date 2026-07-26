@@ -13,7 +13,9 @@ const claude: HostConfig = {
 
   frontmatter: {
     mode: 'denylist',
-    stripFields: ['sensitive', 'voice-triggers'],
+    // `catalog` is a build-time directive (see applyCatalogTrim), not skill
+    // metadata — strip it so it never ships in a generated SKILL.md.
+    stripFields: ['sensitive', 'voice-triggers', 'catalog'],
     descriptionLimit: null,
   },
 

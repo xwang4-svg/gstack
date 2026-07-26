@@ -421,6 +421,35 @@ export function toYamlInlineScalar(s: string): string {
  * Returns the rewritten content plus the parts (used for proactive-suggestions
  * JSON aggregation at the end of the run).
  */
+/**
+ * Per-skill opt-out from the catalog trim, mirroring the global
+ * `--catalog-mode=full`. Read from the TEMPLATE, not the generated content:
+ * `catalog` is in the Claude host's stripFields, so by the time transformFrontmatter
+ * has run the key is already gone from `content`.
+ *
+ * The trim assumes routing prose can move out of the description into the body
+ * and a registry without loss. That holds only while the description is not
+ * itself the routing surface. For freeze and careful it is: they carry bilingual
+ * trigger keywords (冻结编辑 / 限制编辑目录 / 危险命令确认) that a Chinese-language
+ * prompt has to match against.
+ *
+ * Those keywords cannot simply live in `triggers:` instead — Claude Code does not
+ * read that field. Verified against cli.js 2.1.92, whose skill frontmatter parser
+ * exposes exactly: name, description, allowed-tools, argument-hint, arguments,
+ * when_to_use, version, model, disable-model-invocation, user-invocable, hooks.
+ * `triggers` appears nowhere in it, so a keyword trimmed out of the description is
+ * invisible to routing, not relocated.
+ *
+ * Opt-in only: a template without `catalog: full` keeps the default trim, so this
+ * changes no existing generated output.
+ */
+export function wantsFullCatalog(tmplContent: string): boolean {
+  if (!tmplContent.startsWith('---\n')) return false;
+  const fmEnd = tmplContent.indexOf('\n---', 4);
+  if (fmEnd === -1) return false;
+  return /^catalog:\s*full\s*$/m.test(tmplContent.slice(4, fmEnd));
+}
+
 export function applyCatalogTrim(content: string, skillName: string): { content: string; parts: CatalogParts } | null {
   // Locate description block in frontmatter
   if (!content.startsWith('---\n')) return null;
@@ -853,7 +882,7 @@ function processTemplate(tmplPath: string, host: Host = 'claude'): { outputPath:
 
   // Catalog trim (Claude only — external hosts have their own frontmatter shapes)
   let catalogParts: CatalogParts | null = null;
-  if (host === 'claude' && CATALOG_MODE === 'trim') {
+  if (host === 'claude' && CATALOG_MODE === 'trim' && !wantsFullCatalog(tmplContent)) {
     const trimmed = applyCatalogTrim(content, skillName);
     if (trimmed) {
       content = trimmed.content;

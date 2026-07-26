@@ -18,12 +18,68 @@
  */
 
 import { describe, test, expect } from 'bun:test';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   splitCatalogDescription,
   buildTrimmedDescription,
   buildWhenToInvokeSection,
   applyCatalogTrim,
+  wantsFullCatalog,
 } from '../scripts/gen-skill-docs';
+
+const ROOT = path.resolve(import.meta.dir, '..');
+
+/**
+ * `catalog: full` opt-out.
+ *
+ * The trim moves routing prose out of the description on the assumption that it
+ * can live in the body instead. For freeze and careful that assumption fails:
+ * their descriptions carry bilingual trigger keywords, and Claude Code reads no
+ * `triggers:` field (cli.js 2.1.92 parses only name / description /
+ * allowed-tools / argument-hint / arguments / when_to_use / version / model /
+ * disable-model-invocation / user-invocable / hooks). Trimmed keywords are
+ * invisible to routing, not relocated — freeze lost 冻结编辑 / 限制编辑目录 and
+ * careful lost 危险命令确认 / 防误删 on every regeneration.
+ */
+describe('catalog: full opt-out', () => {
+  test('defaults to trimming — absent key means opt-in never fires', () => {
+    expect(wantsFullCatalog('---\nname: x\ndescription: y\n---\nbody')).toBe(false);
+  });
+
+  test('detects the key in template frontmatter only', () => {
+    expect(wantsFullCatalog('---\nname: x\ncatalog: full\n---\nbody')).toBe(true);
+    // Body text mentioning it must not count.
+    expect(wantsFullCatalog('---\nname: x\n---\ncatalog: full\n')).toBe(false);
+  });
+
+  for (const skill of ['careful', 'freeze']) {
+    test(`${skill} template opts out`, () => {
+      const tmpl = fs.readFileSync(path.join(ROOT, skill, 'SKILL.md.tmpl'), 'utf-8');
+      expect(wantsFullCatalog(tmpl)).toBe(true);
+    });
+
+    test(`${skill} generated description keeps its Chinese trigger keywords`, () => {
+      const content = fs.readFileSync(path.join(ROOT, skill, 'SKILL.md'), 'utf-8');
+      const fm = content.slice(0, content.indexOf('\n---', 3));
+      const expected = skill === 'freeze' ? ['冻结编辑', '限制编辑目录'] : ['危险命令确认', '防误删'];
+      for (const kw of expected) expect(fm).toContain(kw);
+    });
+  }
+
+  test('catalog: is a build directive and never ships in a generated SKILL.md', () => {
+    for (const entry of fs.readdirSync(ROOT, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      const file = path.join(ROOT, entry.name, 'SKILL.md');
+      if (!fs.existsSync(file)) continue;
+      const content = fs.readFileSync(file, 'utf-8');
+      if (!content.startsWith('---')) continue;
+      const end = content.indexOf('\n---', 3);
+      if (end === -1) continue;
+      expect(content.slice(3, end)).not.toMatch(/^catalog:/m);
+    }
+  });
+});
 
 describe('splitCatalogDescription', () => {
   test('extracts lead sentence + routing prose from simple multi-line description', () => {

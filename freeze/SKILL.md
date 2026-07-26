@@ -1,7 +1,8 @@
 ---
 name: freeze
 version: 0.2.0
-description: "Restrict file edits to one directory — a PreToolUse hook hard-denies Edit/Write outside the frozen path, including Windows drive-letter paths; triggers: freeze edits / 冻结编辑 / lock editing scope / restrict file changes / only edit this folder / 限制编辑目录 / edit boundary / prevent accidental edits / 防误改; release with /unfreeze; governance anchor 治理锚 = 2026-07-26 five-vote committee REJECT→fix receipt, deny must emit nested hookSpecificOutput permissionDecision and the freeze regression suite must stay green (gstack)"
+description: |
+  Restrict file edits to one directory — a PreToolUse hook hard-denies Edit/Write outside the frozen path, including Windows drive-letter paths; triggers: freeze edits / 冻结编辑 / lock editing scope / restrict file changes / only edit this folder / 限制编辑目录 / edit boundary / prevent accidental edits / 防误改; release with /unfreeze; governance anchor 治理锚 = 2026-07-26 five-vote committee REJECT→fix receipt, deny must emit nested hookSpecificOutput permissionDecision and the freeze regression suite must stay green (gstack)
 triggers:
   - freeze edits to directory
   - 冻结编辑范围
@@ -32,14 +33,6 @@ hooks:
 ---
 <!-- AUTO-GENERATED from SKILL.md.tmpl — do not edit directly -->
 <!-- Regenerate: bun run gen:skill-docs -->
-
-
-## When to invoke this skill
-
-Blocks Edit and Write outside the allowed path. Use when debugging to prevent
-accidentally "fixing" unrelated code, or when you want to scope changes to one
-module. Use when asked to "freeze", "restrict edits", "only edit this folder",
-or "lock down edits".
 
 # /freeze — Restrict Edits to a Directory
 

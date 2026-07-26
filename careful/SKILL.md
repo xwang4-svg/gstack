@@ -1,7 +1,8 @@
 ---
 name: careful
 version: 0.2.0
-description: "Safety guardrails for destructive commands — a PreToolUse hook prompts for confirmation before rm -rf, DROP TABLE, TRUNCATE, force-push, git reset --hard, git checkout ., kubectl delete and docker prune, and the user can still override each prompt; triggers: be careful / 小心模式 / safety mode / 安全模式 / prod mode / warn before destructive / 危险命令确认 / guard against rm -rf / 防误删; governance anchor 治理锚 = 2026-07-26 hook-contract sweep, warn must emit nested hookSpecificOutput permissionDecision and the careful regression suite must stay green (gstack)"
+description: |
+  Safety guardrails for destructive commands — a PreToolUse hook prompts for confirmation before rm -rf, DROP TABLE, TRUNCATE, force-push, git reset --hard, git checkout ., kubectl delete and docker prune, and the user can still override each prompt; triggers: be careful / 小心模式 / safety mode / 安全模式 / prod mode / warn before destructive / 危险命令确认 / guard against rm -rf / 防误删; governance anchor 治理锚 = 2026-07-26 hook-contract sweep, warn must emit nested hookSpecificOutput permissionDecision and the careful regression suite must stay green (gstack)
 triggers:
   - be careful
   - 小心模式
@@ -25,15 +26,6 @@ hooks:
 ---
 <!-- AUTO-GENERATED from SKILL.md.tmpl — do not edit directly -->
 <!-- Regenerate: bun run gen:skill-docs -->
-
-
-## When to invoke this skill
-
-Warns before rm -rf, DROP TABLE, force-push, git reset --hard, kubectl
-delete, and similar destructive operations. User can override each warning.
-Use when touching prod, debugging live systems, or working in a shared
-environment. Use when asked to "be careful", "safety mode", "prod mode",
-or "careful mode".
 
 # /careful — Destructive Command Guardrails
 
